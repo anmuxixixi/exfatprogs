@@ -1,0 +1,64 @@
+name: Android integration
+
+# A full AOSP checkout does not fit reliably in a standard GitHub-hosted
+# runner. This workflow parses the Android.bp subset used by exfatprogs,
+# generates Ninja rules, and builds Android binaries with the NDK toolchain.
+# It is not a substitute for an occasional full Soong build in AOSP.
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-build:
+    # A manual run is intentionally limited to exfat-next. Pushes to master are
+    # always tested before a release is made from that branch.
+    if: >-
+      github.event_name == 'push' ||
+      github.ref == 'refs/heads/exfat-next'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out exfatprogs
+        uses: actions/checkout@v4
+
+      - name: Generate Ninja rules and build Android binaries
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          ndk=${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}
+          if [[ -z "$ndk" ]]; then
+            echo "The GitHub runner did not provide an Android NDK" >&2
+            exit 1
+          fi
+
+          toolchain="$ndk/toolchains/llvm/prebuilt/linux-x86_64"
+          cc="$toolchain/bin/clang"
+          ar="$toolchain/bin/llvm-ar"
+          readelf="$toolchain/bin/llvm-readelf"
+          target=aarch64-linux-android24
+          out="$GITHUB_WORKSPACE/android_out"
+
+          python3 scripts/android_bp_to_ninja.py \
+            --root . \
+            --out "$out" \
+            --cc "$cc" \
+            --ar "$ar" \
+            --target "$target" \
+            --module fsck.exfat
+          ninja -f "$out/build.ninja" -v
+
+          for binary in "$out"/bin/*; do
+            "$readelf" --file-header "$binary"
+          done
